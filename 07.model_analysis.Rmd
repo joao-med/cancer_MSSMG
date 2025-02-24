@@ -1,0 +1,232 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+```{r}
+library(tidyverse)
+library(spdep)
+library(INLA)
+library(patchwork)
+library(dplyr)
+library(readr)
+library(stringr)
+library(ggspatial)
+
+```
+
+
+```{r}
+# retirar notação científica
+options(scipen=999)
+# Lendo o modelo de dados
+data_mod <- read_rds("data//data_model.rds") %>% mutate(TIPO = TIPO %>% as.factor())
+data_mod$TIPO <- relevel(data_mod$TIPO, ref="Urbano")
+# transformando GINI para escala de 0-100
+data_mod$GINI <- data_mod$GINI*1
+## *Selecionando cidades na região*
+# Lendo um arquivo CSV contendo informações sobre municípios, microrregiões e macrorregiões
+tab_mun_micro_macro <- read.csv("data//tab_mun_micro_macro_br.csv", 
+                                sep = ";", encoding = "UTF-8")
+# Filtrando apenas os municípios de Minas Gerais na macroregião 3107
+se_minas <- tab_mun_micro_macro %>% filter(UF == "MG" & MACRO_COD == "3107")
+# Extraindo os códigos dos municípios
+cods <- se_minas$MUN_COD %>% str_sub(end =6)
+# Carregando um arquivo de mapa no formato sf (gerado pelo IBGE)
+munMG <- read_rds('data//munMG.rds')
+# Ajustando os códigos de municípios para terem 6 dígitos (como o DATASUS)
+munMG$code_muni <- str_sub(munMG$code_muni, end = 6)
+# Filtrando os dados de Minas Gerais com base na região sudeste
+se_map <- munMG %>% filter(code_muni %in% cods) %>% 
+  dplyr::select(code_muni, name_muni)
+# Criando uma matriz de vizinhança
+w.nb <- poly2nb(se_map)
+# Mudando o tipo de dado espacial
+data_mod <- as_Spatial(data_mod, cast = TRUE, IDs = paste0("ID", seq_along(regiao)))
+# Mudando a referência de TIPO
+nb2INLA("mg_graph", w.nb)
+```
+
+# Modelos
+
+Nesse caso iremos avaliar o modelo selecionado anteriormente
+
+```{r}
+# Identificadores
+data_mod@data$ind <- 1:nrow(data_mod@data)
+data_mod@data$ind2 <- 1:nrow(data_mod@data)
+# Modelo A - completo
+mod_A <- n_deaths ~ GINI + TIPO + T_ENV +
+  f(ind, model="iid",
+    hyper = list("prec" = list(prior = "loggamma", param = c(0.5, 0.0005))))+
+  f(ind2, model = "besag", 
+    graph = "mg_graph", 
+    hyper = list("prec" = list(prior = "loggamma", param = c(0.5, 0.0005))))
+
+output_A <- inla(formula = mod_A,
+                 family = "poisson",
+                 E = expected, 
+                 data = data_mod@data,
+                 control.fixed = control.fixed(mean.intercept = 0, 
+                                               prec.intercept = 1e-5, mean = 0,
+                                               prec = 1e-5  ),
+                 control.compute = list(dic = T))
+
+```
+
+# Salvando Estimativas
+
+```{r}
+estimates_A <- rownames_to_column(
+  output_A$summary.fixed, var = 'variable')[-1,c(1,4,2,6)] %>% 
+  mutate_if(is.numeric, ~ round(.,3))
+
+estimates_A
+
+estimates_A %>% ggplot(aes(x = mean, y = variable))+
+  geom_point()+
+  geom_errorbar(aes(xmin = `0.025quant`, xmax = `0.975quant`))+
+  ggtitle("A")
+```
+
+# Avaliando Hiperparâmetros
+```{r}
+output_A$summary.hyperpar
+```
+
+# Razão de Mortalidade Padronizada
+
+## Relação entre RMP e RMPa
+```{r}
+# A
+data_mod_A <- data_mod
+data_mod_A@data$RMPa <- output_A$summary.fitted.values[, "mean"]
+data_mod_A@data$LL <- output_A$summary.fitted.values[, "0.025quant"]
+data_mod_A@data$UL <- output_A$summary.fitted.values[, "0.975quant"]
+summary(data_mod_A)
+# Gráfico
+ggplot(data_mod_A@data, aes(x = code_muni, y = SMR)) +
+  geom_point(stat = "identity")+
+  geom_point(aes(y=RMPa), col = "blue")+
+  geom_errorbar(aes(ymin=LL, ymax=UL), width=.2,
+                position=position_dodge(0.05))+
+  xlab("")+
+  ggtitle("A")
+
+```
+
+## Curvas com a distribuição posterior marginal de cada variável
+
+```{r}
+# A
+library(RColorBrewer)
+marginal1A <- inla.smarginal(output_A$marginals.fixed$GINI)
+marginal1A <- data.frame(marginal1A)
+plot1A <- ggplot(marginal1A, aes(x = x, y = y)) + 
+  geom_line() +
+  labs(title="A - GINI", x = expression(beta["GINI"]), y = "Densidade") +
+  geom_vline(xintercept = 0, col = "blue") + 
+  theme_bw()
+marginal2A <- inla.smarginal(output_A$marginals.fixed$TIPORuralAdjacente)
+marginal2A <- data.frame(marginal2A)
+plot2A <- ggplot(marginal1A, aes(x = x, y = y)) + 
+  geom_line() +
+  labs(title="A - TIPO", x = expression(beta["TIPORuralAdjacente"]), y = "Densidade") +
+  geom_vline(xintercept = 0, col = "blue") + 
+  theme_bw()
+marginal3A <- inla.smarginal(output_A$marginals.fixed$TIPOIntermediarioAdjacente)
+marginal3A <- data.frame(marginal3A)
+plot3A <- ggplot(marginal1A, aes(x = x, y = y)) + 
+  geom_line() +
+  labs(title="A - TIPO", x = expression(beta["TIPOIntermediarioAdjacente"]), y = "Densidade") +
+  geom_vline(xintercept = 0, col = "blue") + 
+  theme_bw()
+marginal4A <- inla.smarginal(output_A$marginals.fixed$TIPOIntermediarioAdjacente)
+marginal4A <- data.frame(marginal4A)
+plot4A <- ggplot(marginal1A, aes(x = x, y = y)) + 
+  geom_line() +
+  labs(title="A - ENV", x = expression(beta["T_ENV"]), y = "Densidade") +
+  geom_vline(xintercept = 0, col = "blue") + 
+  theme_bw()
+# Painéis
+plot1A+plot2A+plot3A+plot4A
+# Plot conjunto
+marginal1A$Variavel <- "GINI"
+marginal2A$Variavel <- "TIPO RURAL"
+marginal3A$Variavel <- "TIPO URBANO"
+marginal4A$Variavel <- "T_ENV"
+marginalA <- rbind(marginal1A,marginal2A, marginal3A, marginal4A)
+# Plot 
+ggplot(marginalA, aes(x=x, y=y, col=Variavel)) + 
+  geom_line() +
+  labs(title="Distribuição a posteriori dos coeficientes", x = expression(beta), y = "Densidade") +
+  geom_vline(xintercept = 0, col = "black") + 
+  theme_bw()
+
+```
+
+# Mapas
+
+```{r}
+data_mod <- read_rds("data//data_model.rds") %>% mutate(TIPO = TIPO %>% as.factor())
+```
+
+## Modelo A
+
+```{r}
+# A 
+mod_A <- data_mod %>% bind_cols(RMPa= data_mod_A@data$RMPa) %>% 
+    left_join(bind_cols(name_muni = c("Leopoldina","Juiz De Fora", "Ubá"),
+                    code_muni = c(313840,313670,316990) %>% as.character()))
+mod_A <- cbind(mod_A, st_coordinates(st_centroid(mod_A$geom)))
+main_cities <- mod_A %>% st_drop_geometry() %>%
+  filter(name_muni %in% c("Leopoldina","Juiz De Fora", "Ubá"))
+data_mod_A@data$RMPa %>% max
+data_mod_A@data$RMPa %>% min
+# Mapa RMP
+map <- ggplot() +
+  geom_sf(data = mod_A, aes(fill = SMR),
+          col="gray", size=0.3)+
+  scale_fill_gradient2(midpoint=1, low="blue", mid="white", high="red") +
+  labs(fill="RMP",title="Razão de Mortalidade Padronizada") +
+  theme_bw()+
+  annotation_scale(location = "br", width_hint = 0.5) +
+  annotation_north_arrow(location = "br", which_north = "true", 
+                         pad_x = unit(0.1, "in"), pad_y = unit(0.5, "in"),
+                         style = north_arrow_fancy_orienteering)+
+    geom_text(data = main_cities, aes(X,Y, label = name_muni))+
+    xlab("")+  ylab("")
+map
+# Mapa RMPa
+mapA <- ggplot() +
+  geom_sf(data = mod_A, aes(fill = RMPa),
+          col="gray", size=0.3)+
+  scale_fill_gradient2(midpoint=1, low="blue", mid="white", high="red") +
+  labs(fill="RMP",title="Razão de Mortalidade Padronizada Modelo A") +
+  theme_bw()+
+  annotation_scale(location = "br", width_hint = 0.5) +
+  annotation_north_arrow(location = "br", which_north = "true", 
+                         pad_x = unit(0.1, "in"), pad_y = unit(0.5, "in"),
+                         style = north_arrow_fancy_orienteering)+
+    geom_text(data = main_cities, aes(X,Y, label = name_muni))+
+    xlab("")+  ylab("")
+mapA
+```
+
+
+# Calculo dos RMP de cada variável
+
+```{r}
+estimates_A[,2:4] <-apply(estimates_A[,2:4],2,FUN = exp)
+estimates_A
+estimates_A %>% xlsx::write.xlsx('figures_tabs/table2.xlsx')
+```
+# Salvando mapa
+
+```{r}
+fig <- map+mapA 
+ggsave('figures_tabs//fig1.png',fig, dpi = 600, width = 10, height = 5)
+```
+
+

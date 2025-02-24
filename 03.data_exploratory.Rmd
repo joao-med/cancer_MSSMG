@@ -1,0 +1,86 @@
+---
+title: "Tratando dados para Análise Exploratória"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+options(tidyverse.quiet = TRUE)
+# Carregando pacotes
+library(tidyverse)
+library(spdep)
+library(lubridate)
+## *Selecionando cidades na região*
+tab_mun_micro_macro <- read.csv("data//tab_mun_micro_macro_br.csv", 
+                                sep = ";", encoding = "UTF-8")
+se_minas <- tab_mun_micro_macro %>% filter(UF == "MG" & MACRO_COD == "3107")
+# Filtrando com os códigos das cidades
+cods <- se_minas$MUN_COD %>% str_sub(end =6)
+# Baixando o mapa em sf (formato IBGE gerado pelo IPEA)
+munMG <- read_rds('data//munMG.rds')
+# O DATASUS usa apenas 6 dígitos para os códigos das cidades
+munMG$code_muni <- str_sub(munMG$code_muni, end = 6)
+# Filtrando dados de Minas Gerais com base na região sudeste
+se_map <- munMG %>% filter(code_muni %in% cods) %>% 
+  dplyr::select(code_muni, name_muni)
+# Regiões vizinhas
+w.nb <- poly2nb(se_map)
+## *Causas de morte*
+cid <- readxl::read_excel("data//CID-10.xltx") %>% dplyr::select(CAT,DESCRICAO)
+data_ob <- read_rds("data//data_ob.rds")
+## Dados populacionais
+mun_pop <- read_rds("data//mun_pop.rds")
+## Censo
+census_2010 <- read_rds("data//census_2010.rds")
+# Cobertura APS
+aps_coverage_2010 <- read_rds("data//aps_coverage_2010.rds")
+# ANS
+coverage_ANS <- read_rds("data//covarege_ANS.rds") 
+# Variáveis
+variables_list <- read_rds('data//variables_list.rds')
+load('functions//summarize_ob.Rdata')
+load('functions//SMR.Rdata')
+load("functions//filter_ob_cat_age.Rdata")
+load("functions//std_rate.Rdata")
+filter_ob_cat_age()
+```
+
+
+```{r}
+# Dados a serem adicionados
+tipo_cidade <- read.csv("data//tipo_cidade.csv", sep = ";") %>%
+  select(-MUN_NOME) %>%
+  mutate(MUN_COD = MUN_COD %>% as.character())
+
+# Referência de região para assistência médica
+region_hc <- readxl::read_excel("data//tab_mun_micro_SRS.xltx") %>%
+  mutate(class = sub(" .*", "", SRS),
+         MUN_COD = MUN_COD %>% as.character()) %>%
+  left_join(se_map, ., by = c("code_muni" = 'MUN_COD')) %>%
+  st_drop_geometry() %>%
+  select(code_muni, region_hc = SRS)
+```
+
+# Criando dados para o processo exploratório e analítico
+
+## 2010-2019
+
+```{r}
+data_10_19 <- left_join(summarize_ob(year_start = 2010, year_end = 2019),
+                        SMR(year_start = 2010, year_end = 2019) %>%
+                          select(-observed), by = c('code_muni' = "mun"))
+data_10_19 <- left_join(data_10_19,
+                        std_rate(year_start = 2010, year_end = 2019) %>%
+                          select(code_muni, Taxa_padronizada) %>%
+                          st_drop_geometry())
+# Adição de tipos de cidades
+data_10_19 <- left_join(data_10_19,
+                        tipo_cidade, by = c('code_muni' = 'MUN_COD'))
+
+# Adição de referência de região para assistência médica
+data_10_19 <- left_join(data_10_19,
+                        region_hc, by = c('code_muni' = 'code_muni'))
+
+write_rds(data_10_19, "data//data_10_19.rds")
+```

@@ -1,0 +1,166 @@
+---
+title: "R Notebook"
+output:
+html_document:
+df_print: paged
+---
+
+# Introdução
+
+A partir da seleção de variáveis anteriores, as seguintes foram selecionadas:
+
+* GINI
+* TIPO
+* T_ENV
+
+Neste caso, o objetivo é produzir um modelo bayesiano que capture variações espaciais e a diferença de risco entre as localidades a partir das variáveis introduzidas.
+
+A seguir, serão testados modelos diferentes, introduzindo primeiro apenas as variáveis e depois efeitos aleatórios espaciais.
+
+```{r}
+library(tidyverse)
+library(spdep)
+library(INLA)
+library(mapview)
+library(tidyverse)
+```
+
+```{r}
+# Remover notação científica
+options(scipen=999)
+data_mod <- read_rds("data//data_model.rds") %>% mutate(TIPO = TIPO %>% as.factor())
+## *Selecionando cidades na região*
+tab_mun_micro_macro <- read.csv("data//tab_mun_micro_macro_br.csv", 
+                                sep = ";", encoding = "UTF-8")
+se_minas <- tab_mun_micro_macro %>% filter(UF == "MG" & MACRO_COD == "3107")
+# Filtrar com os códigos das cidades
+cods <- se_minas$MUN_COD %>% str_sub(end =6)
+# Baixar mapa em sf (formato IBGE gerado pelo IPEA)
+munMG <- read_rds('data//munMG.rds')
+# O DATASUS usa apenas 6 dígitos para o código da cidade
+munMG$code_muni <- str_sub(munMG$code_muni, end = 6)
+# Filtrar dados de Minas Gerais com base na região sudeste
+se_map <- munMG %>% filter(code_muni %in% cods) %>% 
+  dplyr::select(code_muni, name_muni)
+# Regiões vizinhas
+w.nb <- poly2nb(se_map)
+# Criando a matriz de vizinhança
+nb2INLA("mg_graph", w.nb)
+
+# Mudando o tipo de dado espacial
+data_mod <- as_Spatial(data_mod, cast = TRUE, IDs = paste0("ID", seq_along(regiao)))
+data_mod$TIPO <- relevel(data_mod$TIPO, ref="Urbano")
+```
+
+# Modelos
+
+## A - Modelo de Poisson
+
+Para iniciar a análise, será construído um modelo com as variáveis selecionadas.
+
+```{r}
+# A - modelo de Poisson
+mod_A <- n_deaths ~  T_ENV + GINI + TIPO
+#output
+output_A <- inla(formula = mod_A,
+                 family = "poisson",
+                 E = expected, 
+                 data = data_mod@data,
+                 control.fixed = control.fixed(mean.intercept = 0, 
+                                               prec.intercept = 1e-5, mean = 0,
+                                               prec = 1e-5  ),
+                 control.compute = list(dic = T))
+# guardando estimativas para cada uma das variáveis e o DIC do modelo
+estimatesA <- tibble()
+results <- output_A 
+name <- paste0("A") 
+dic <- results$dic[1]
+results <- rownames_to_column(results$summary.fixed,var = 'variable')[-1,c(1,2,4,6)]
+results <- results %>% mutate_if(is.numeric, ~ round(.,3))
+results <- cbind(results,dic, model = name)
+results <- results[,c(1,3,2,4,5,6)]
+
+# Juntando os dados
+estimatesA <- results
+```
+
+## B - Modelo de Poisson com Efeitos Aleatórios Não Estruturados (phi)
+
+```{r}
+# Identificadores
+data_mod@data$ind <- 1:nrow(data_mod@data)
+# Função
+mod_B <- n_deaths ~  T_ENV + GINI + TIPO +
+  f(ind, model="iid", hyper = list("prec" = list(prior = "loggamma", param = c(0.5, 0.0005))))
+
+
+output_B <- 
+  inla(formula = mod_B,
+       family = "poisson",
+       E = expected, 
+       data = data_mod@data,
+       control.fixed = control.fixed(mean.intercept = 0, 
+                                     prec.intercept = 1e-5, mean = 0,
+                                     prec = 1e-5  ),
+       control.compute = list(dic = T))
+
+#estimatesA <- tibble()
+results <- output_B
+name <- paste0("B") 
+dic <- results$dic[1]
+results <- rownames_to_column(results$summary.fixed,var = 'variable')[-1,c(1,2,4,6)]
+results <- results %>% mutate_if(is.numeric, ~ round(.,3))
+results <- cbind(results,dic, model = name)
+results <- results[,c(1,3,2,4,5,6)]
+
+# Juntando os dados
+estimatesB <- results
+```
+
+## C - Modelo com Efeitos Espaciais
+
+```{r}
+# C
+# Identificadores
+data_mod@data$ind2 <- 1:nrow(data_mod@data)
+# Função
+mod_C <- n_deaths ~  T_ENV + GINI + TIPO +
+  f(ind, model="iid",
+    hyper = list("prec" = list(prior = "loggamma", param = c(0.5, 0.0005))))+
+  f(ind2, model = "besag", 
+    graph = "mg_graph", 
+    hyper = list("prec" = list(prior = "loggamma", param = c(0.5, 0.0005)))) 
+
+#output
+output_C <- inla(formula = mod_C,
+                 family = "poisson",
+                 E = expected, 
+                 data = data_mod@data,
+                 control.fixed = control.fixed(mean.intercept = 0, 
+                                               prec.intercept = 1e-5, mean = 0,
+                                               prec = 1e-5  ),
+                 control.compute = list(dic = T))
+# guardando estimativas para cada uma das variáveis e o DIC do modelo
+estimatesA <- tibble()
+results <- output_C
+name <- paste0("C") 
+dic <- results$dic[1]
+results <- rownames_to_column(results$summary.fixed,var = 'variable')[-1,c(1,2,4,6)]
+results <- results %>% mutate_if(is.numeric, ~ round(.,3))
+results <- cbind(results,dic, model = name)
+results <- results[,c(1,3,2,4,5,6)]
+
+# Juntando os dados
+estimatesC <- results
+```
+## Estimativas
+
+```{r}
+estimatesA
+estimatesB
+estimatesC
+```
+
+Ao final o modelo selecionada foi o compelto, que juntas as variáveis selecionadas anteriormente juntamente com os efeitos aleatórios.
+
+

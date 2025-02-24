@@ -1,0 +1,126 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+# Exploratory Analysis
+
+```{r}
+library(tidyverse)
+library(DataExplorer)
+library(GGally)
+library(sf)
+library(mapview)
+# External functions
+load('functions//map_mun.Rdata')
+load('functions//filter_ob.Rdata')
+```
+
+
+## loading data
+
+```{r}
+data_10_19 <- read_rds("data//data_10_19.rds")
+data_ob <- read_rds("data//data_ob.rds")
+tab_mun_micro_macro <- read.csv("data//tab_mun_micro_macro_br.csv", 
+                                sep = ";", encoding = "UTF-8")
+se_minas <- tab_mun_micro_macro %>% filter(UF == "MG" & MACRO_COD == "3107")
+cods <- se_minas$MUN_COD %>% str_sub(end =6)
+data_ob <- data_ob %>% filter(CODMUNRES %in% cods)
+
+```
+
+## Processing death data for analysis 
+```{r}
+data <- data_10_19  %>%
+  mutate( PC_COBERTURA_SF = PC_COBERTURA_SF %>% as.integer(),
+          PC_COBERTURA_AB = PC_COBERTURA_AB %>% as.integer(),
+          pct_rur = round(pesoRUR/pesotot,2),
+          pct_urb= round(pesourb/pesotot,2),
+          AB_dummy = ifelse(PC_COBERTURA_AB >= 80, 1,0) %>% 
+            as.factor(),
+          SF_dummy = ifelse(PC_COBERTURA_SF >= 80, 1,0) %>% 
+            as.factor(),
+          T_AGUA_dummy = ifelse(T_AGUA >=95, 1,0) %>% 
+            as.factor(),
+          T_BANAGUA_dummy = ifelse(T_BANAGUA >=95, 1,0) %>% 
+            as.factor(),
+          T_LIXO_dummy = ifelse(T_LIXO >=95, 1,0) %>% 
+            as.factor(),
+          T_LUZ_dummy = ifelse(T_LUZ >=95, 1,0) %>% 
+            as.factor(),
+          AGUA_ESGOTO_dummy = ifelse(AGUA_ESGOTO <=5,1,0) %>% 
+            as.factor(),
+          region_hc = region_hc %>% as.factor())
+summary(data)
+data_sex_age <- filter_ob() %>%
+  drop_na(IDADEanos) %>% 
+  mutate(age_group = cut(IDADEanos, c(seq(0, 80, by = 5), Inf), 
+                         include.lowest = T, right = F)) %>% 
+  group_by(SEXO, age_group) %>% 
+  summarise(n = n()) %>% mutate(age_group = age_group %>% 
+                                  str_remove_all("\\[|\\)|\\]") %>% 
+                                  str_replace("80,Inf","80+") %>%
+                                  str_replace(",","-") %>% 
+                                  str_replace("5-10","05-10"))
+```
+
+## Descriptive Anlysis
+
+### Descriptive on Mortality
+```{r}
+# Selecting variables on mortality
+data_m <- data %>% select(name_muni,n_deaths,Adj, expected, SMR)
+```
+
+```{r}
+data_ob %>% drop_na(SEXO) %>% count(SEXO)
+```
+
+
+```{r}
+# age and sex table
+DT::datatable(data_sex_age %>% 
+                pivot_wider(names_from = SEXO, values_from = n) %>% 
+                mutate(total = Feminino + Masculino))
+# Box plot
+data_sex_age  %>% 
+  ggplot(aes(n, SEXO))+
+  geom_boxplot()+
+    stat_summary(fun.y=mean, geom="point", shape=20, size=2, color="black", fill="black")
+# Piramide
+data_sex_age %>% mutate(n = ifelse(SEXO == "Feminino", -n, n)) %>% 
+  ggplot(aes(n, age_group, fill= SEXO))+
+  geom_bar(stat = "identity")
+# Diferença entre média de idades
+filter_ob() %>% ggplot(aes(IDADEanos, SEXO))+
+   geom_boxplot()+
+    stat_summary(fun.y=mean, geom="point", shape=20, size=2, color="black", fill="black")
+# Medianas
+filter_ob() %>% group_by(SEXO) %>% summarise(median(IDADEanos))
+filter_ob() %>% summarise(median(IDADEanos))
+# teste para analisar diferença entre grupos
+wilcox.test(IDADEanos ~ SEXO ,filter_ob(),  alternative = "two.sided" )
+  
+```
+
+
+```{r}
+# table for the data
+DT::datatable(data_m %>% arrange(desc(n_deaths)))
+# map
+data_m %>% map_mun('Adj',satellite = F)
+# data_m %>% map_mun('SMR', satellite = F)
+```
+
+

@@ -1,0 +1,510 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+# Análise Exploratória
+
+```{r}
+library(tidyverse)
+library(DataExplorer)
+library(GGally)
+library(sf)
+library(mapview)
+library(rstatix)
+# Funções Externas
+load('functions//map_mun.Rdata')
+load('functions//filter_ob.Rdata')
+```
+
+
+## Carregando os dados
+
+```{r}
+data_10_19 <- read_rds("data//data_10_19.rds")
+data_ob <- read_rds("data//data_ob.rds")
+tab_mun_micro_macro <- read.csv("data//tab_mun_micro_macro_br.csv", 
+                                sep = ";", encoding = "UTF-8")
+se_minas <- tab_mun_micro_macro %>% filter(UF == "MG" & MACRO_COD == "3107")
+cods <- se_minas$MUN_COD %>% str_sub(end =6)
+```
+
+## Processando dados de mortalidade para análise 
+```{r}
+data <- data_10_19  %>%
+  mutate( PC_COBERTURA_SF = PC_COBERTURA_SF %>% as.integer(),
+          PC_COBERTURA_AB = PC_COBERTURA_AB %>% as.integer(),
+          pct_rur = round(pesoRUR/pesotot,2),
+          pct_urb= round(pesourb/pesotot,2),
+          AB_dummy = ifelse(PC_COBERTURA_AB >= 80, 1,0) %>% 
+            as.factor(),
+          SF_dummy = ifelse(PC_COBERTURA_SF >= 80, 1,0) %>% 
+            as.factor(),
+          T_AGUA_dummy = ifelse(T_AGUA >=95, 1,0) %>% 
+            as.factor(),
+          T_BANAGUA_dummy = ifelse(T_BANAGUA >=95, 1,0) %>% 
+            as.factor(),
+          T_LIXO_dummy = ifelse(T_LIXO >=95, 1,0) %>% 
+            as.factor(),
+          T_LUZ_dummy = ifelse(T_LUZ >=95, 1,0) %>% 
+            as.factor(),
+          AGUA_ESGOTO_dummy = ifelse(AGUA_ESGOTO <=5,1,0) %>% 
+            as.factor(),
+          region_hc = region_hc %>% as.factor())
+summary(data)
+data_sex_age <- filter_ob() %>%
+  drop_na(IDADEanos) %>% 
+  mutate(age_group = cut(IDADEanos, c(seq(0, 80, by = 5), Inf), 
+                         include.lowest = T, right = F)) %>% 
+  group_by(SEXO, age_group) %>% 
+  summarise(n = n()) %>% mutate(age_group = age_group %>% 
+                                  str_remove_all("\\[|\\)|\\]") %>% 
+                                  str_replace("80,Inf","80+") %>%
+                                  str_replace(",","-") %>% 
+                                  str_replace("5-10","05-10"))
+```
+
+## Análise Descritiva
+
+### Descritivo da Mortalidade
+```{r}
+# Selecionando variáveis de mortalidade
+data_m <- data %>% select(name_muni,n_deaths,Taxa_padronizada, expected, SMR)
+# Resumindo os dados
+summary(data_m)
+DataExplorer::plot_histogram(data_m)
+DataExplorer::plot_qq(data_m)
+```
+
+Quanto aos dados de mortalidade no intervalo de 2010-2019, percebemos uma distribuição desigual esperada de mortes, contrastada por uma taxa e SMR de distribuição aparentemente normais, com médias e medianas muito semelhantes entre si.
+
+```{r}
+# Tabela de idade e sexo
+DT::datatable(data_sex_age %>% 
+                pivot_wider(names_from = SEXO, values_from = n) %>% 
+                mutate(total = Feminino + Masculino))
+
+table_sex_age <- data_sex_age %>% 
+                pivot_wider(names_from = SEXO, values_from = n) %>% 
+                mutate(total = Feminino + Masculino)
+
+table_sex_age <- table_sex_age %>%
+  mutate(
+    Feminino_pct = round(Feminino / sum(Feminino),4),
+    Masculino_pct = round(Masculino / sum(Masculino),4),
+  )
+table_sex_age <- table_sex_age[,c(1,2,5,3,6,4)]
+sum_sex <- data_sex_age %>% group_by(SEXO) %>% 
+  summarise(sum = sum(n))
+sum_sex_total <-bind_cols(age_group = 'total', 
+                          sum_sex %>% summarise(total = sum(sum)))
+
+sum_sex <- sum_sex  %>% pivot_wider(names_from = SEXO, values_from = sum) %>% bind_cols(sum_sex_total)
+table_sex_age <- bind_rows(table_sex_age,sum_sex)
+
+xlsx::write.xlsx(table_sex_age, "tables//table1.xlsx")
+```
+
+Na distribuição por idade e sexo, percebemos que a maior parte das mortes se concentra acima dos 60 anos, sendo que a partir da faixa etária de 60-65 até 75-80, a relação de mortes é bem equiparada.
+
+No quesito sexo, a maioria das mortes é masculina. Além disso, a mediana da idade de cada grupo é diferente entre si.
+
+```{r}
+# Tabela para os dados
+DT::datatable(data_m %>% arrange(desc(n_deaths)))
+# Mapa
+data_m %>% map_mun('Taxa_padronizada',satellite = T)
+data_m %>% map_mun('SMR', satellite = T)
+```
+
+* A cidade que teve menos mortes foi Olaria, com 16 mortes, mas 62 cidades das 94 possuem menos de 100 mortes no período.
+* Juiz de Fora foi a cidade com mais mortes, com 5.15 vezes mais mortes que Muriaé. Isso era esperado devido às populações das cidades no topo.
+* Quando avaliada a taxa por 100.000 habitantes, a cidade com o maior número foi Antônio Prado de Minas, seguida de outras cidades que são fronteiras com o RJ.
+* Cidades próximas a Ubá e algumas na fronteira sul com o RJ, perto de Resende, parecem ter menores taxas.
+* O mesmo padrão é observado nas SMR. Além disso, a cidade com a maior SMR foi fronteiriça com JF, Ewbank da Câmara, seguida por Simão Pereira. As com menores SMR foram próximas a Ubá, sendo Ubá a quarta cidade com menor taxa, mesmo sendo um centro de referência regional.
+
+
+### Descritivo sobre a Saúde
+
+```{r}
+data_hc <- data %>% dplyr::select(name_muni,PC_COBERTURA_SF,PC_COBERTURA_AB,
+                                  coverage_ANS, AB_dummy, SF_dummy, region_hc) 
+# Resumindo os dados
+summary(data_hc)
+DataExplorer::plot_histogram(data_hc)
+DataExplorer::plot_bar(data_hc)
+
+```
+
+Quanto à cobertura de saúde, percebemos uma distribuição normal na porcentagem de pessoas com plan
+
+os de saúde na região, sendo que a curva tem uma assimetria à direita. Quanto à cobertura de saúde primária, ambas as variáveis têm valores próximos a 100% de média.
+
+```{r}
+# Tabela para os dados
+DT::datatable(data_hc %>% arrange(desc(PC_COBERTURA_SF)))
+# Mapa
+data_hc %>% map_mun('PC_COBERTURA_SF',satellite = T)
+data_hc %>% map_mun('PC_COBERTURA_AB',satellite = T)
+data_hc %>% map_mun('coverage_ANS',satellite = T)
+data_hc %>% map_mun('AB_dummy',satellite = T)
+data_hc %>% map_mun('SF_dummy',satellite = T)
+data_hc %>% map_mun('region_hc',satellite = T)
+```
+
+* Quanto à cobertura de saúde da família, alguns outliers incluem Além Paraíba, Juiz de Fora e Orizânia, entre outros. Algumas cidades próximas a Ubá possuem valores menores, enquanto outras com valores menores estão distribuídas de maneira heterogênea.
+* Quanto à cobertura de atenção básica, o padrão se repete, mas os valores são um pouco maiores em média.
+* Quanto à cobertura por planos de saúde, não se nota grande concentração em nenhuma região. Pedro Teixeira é a cidade com o maior valor, 0.21, enquanto Santos Dumont, Estrela Dalva e Guiricema possuem 0.04, o menor valor.
+
+
+### Descritivo Socioeconômico
+
+
+```{r}
+# Significado das abreviações
+siglas <- read_rds('data//siglas_ag.rds')
+DT::datatable(siglas)
+```
+
+#### Relacionado à Idade
+
+```{r}
+data_age <- data %>% select(name_muni,ESPVIDA,SOBRE40,SOBRE60,T_ENV)
+# Resumindo os dados
+summary(data_age)
+DataExplorer::plot_histogram(data_age)
+```
+
+As distribuições nesta categoria são todas normais.
+
+```{r}
+# Tabela para os dados
+DT::datatable(data_age %>% arrange(desc(ESPVIDA)))
+# Mapa
+data_age %>% map_mun('ESPVIDA',satellite = T)
+data_age %>% map_mun('SOBRE40',satellite = T)
+data_age %>% map_mun('SOBRE60',satellite = T)
+data_age %>% map_mun('T_ENV',satellite = T)
+```
+
+* Não é possível encontrar um padrão espacial nas variáveis relatadas, com exceção da taxa de envelhecimento.
+* Interessantemente, a cidade com a maior taxa de mortalidade também foi a com a maior taxa de envelhecimento, mas pode ser apenas uma coincidência.
+* Os maiores centros urbanos (JF, Ubá, Muriaé) demonstram taxas de envelhecimento menores, o que pode estar relacionado com uma migração de jovens para esses centros. Ainda, cidades mais ao norte parecem também ter taxas menores.
+
+#### Relacionado à Renda
+
+```{r}
+data_income <- data %>% select(name_muni,RDPC,GINI,THEIL )
+# Resumindo os dados
+summary(data_income)
+DataExplorer::plot_histogram(data_income)
+```
+
+Distribuições de aparência normal.
+
+```{r}
+# Tabela para os dados
+DT::datatable(data_income %>% arrange(desc(RDPC)))
+# Mapa
+data_income %>% map_mun('RDPC',satellite = T)
+data_income %>% map_mun('GINI',satellite = T)
+data_income %>% map_mun('THEIL',satellite = T)
+```
+
+* As maiores rendas per capita se concentram nos centros urbanos, com alguns outliers como Chiador e Estrela Dalva. As menores parecem estar ao norte/nordeste, próximas a outras cidades de MG.
+* Quanto ao GINI, cidades entre Ubá, JF e Leopoldina parecem ter concentração de piores índices. O pior índice acontece em Ewbank da Câmara e Piraúba, próximas a JF e Ubá, respectivamente. 
+* Quanto ao índice de Theil, o padrão é bastante semelhante.
+
+#### Relacionado ao Acesso à Infraestrutura Vital
+
+```{r}
+data_infra <- data %>% select(name_muni,AGUA_ESGOTO, T_AGUA,
+                              T_BANAGUA,T_LIXO,T_LUZ, T_AGUA_dummy,
+                              T_BANAGUA_dummy,T_LIXO_dummy, T_LUZ_dummy,
+                              AGUA_ESGOTO_dummy)
+# Resumindo os dados
+summary(data_infra)
+DataExplorer::plot_histogram(data_infra)
+DataExplorer::plot_bar(data_infra)
+```
+
+Nenhuma distribuição é normal, com a maioria apresentando padrões exponenciais. A maioria dos valores está próxima do máximo.
+
+```{r}
+# Tabela para os dados
+DT::datatable(data_infra %>% arrange(desc(AGUA_ESGOTO)))
+# Mapa
+data_infra %>% map_mun('AGUA_ESGOTO',satellite = T)
+data_infra %>% map_mun('AGUA_ESGOTO_dummy',satellite = T)
+data_infra %>% map_mun('T_AGUA',satellite = T)
+data_infra %>% map_mun('T_AGUA_dummy',satellite = T)
+data_infra %>% map_mun('T_BANAGUA',satellite = T)
+data_infra %>% map_mun('T_BANAGUA_dummy',satellite = T)
+data_infra %>% map_mun('T_LIXO',satellite = T)
+data_infra %>% map_mun('T_LIXO_dummy',satellite = T)
+data_infra %>% map_mun('T_LUZ',satellite = T)
+data_infra %>% map_mun('T_LUZ_dummy',satellite = T)
+```
+
+* Cada uma das variáveis parece ter outliers diferentes, sem grande distribuição espacial diferente.
+
+#### IDH e Distribuição da População
+
+```{r}
+data_idh <- data %>% select(name_muni,IDHM,IDHM_E,IDHM_L,
+                            IDHM_R, pesoRUR,pesourb,pesotot,TIPO) %>% 
+  mutate(pct_rur = round(pesoRUR/pesotot,2),pct_urb= round(pesourb/pesotot,2))
+# Resumindo os dados
+summary(data_idh)
+DataExplorer::plot_histogram(data_idh)
+```
+
+Tirando as distribuições de população em valores brutos, boa parte é normal. A população urbana sobrepõe a população rural.
+
+```{r}
+# Tabela para os dados
+DT::datatable(data_idh %>% arrange(desc(IDHM)))
+# Mapa
+data_idh %>% map_mun('IDHM',satellite = T)
+data_idh %>% map_mun('IDHM_E',satellite = T)
+data_idh %>% map_mun('IDHM_L',satellite = T)
+data_idh %>% map_mun('IDHM_R',satellite = T)
+data_idh %>% map_mun('pct_rur',satellite = T)
+data_idh %>% map_mun('pct_urb',satellite = T)
+data_idh %>% map_mun('TIPO',satellite = T)
+# data_idh %>% map_mun('pesotot',satellite = T)
+```
+
+* O IDHM parece ter valores menores em cidades fronteiriças ao nordeste, e maiores valores em centros urbanos. Esse mesmo quadro é mais pertinente no IDHE e IDHR em que o padrão é semelhante, mas os valores menores. O IDHL é mais homogêneo.
+* Quanto à distribuição da população, a maioria das cidades são predominantemente urbanas, sendo que cidades no nordeste da região têm uma maior taxa de população rural.
+
+## Análise Exploratória
+
+### Processando SMR
+
+```{r}
+data_expl <- data %>% mutate(SMR_log=log(SMR)) %>% sf::st_drop_geometry()
+data_expl$SMR_log %>% plot_histogram()
+```
+
+### Análise de Correlação
+
+#### Saúde
+
+*Nenhuma variável demonstrou grande correlação com SMR_log.*
+
+###### CORRELAÇÃO
+
+```{r}
+data_expl %>% 
+  select(SMR_log,coverage_ANS) %>% 
+  ggpairs(progress = F)
+# Correlação de Spearman devido à distribuição diferente
+data_expl %>% select(SMR_log, PC_COBERTURA_SF,PC_COBERTURA_AB, coverage_ANS) %>% 
+  cor(method = "spearman") %>% corrplot::corrplot.mixed()
+
+```
+
+##### BOXPLOTS E TESTE T
+
+```{r}
+## arrumar com wilcox
+
+##PLOTS
+data_expl %>% 
+  ggplot() +
+  geom_boxplot(aes(SF_dummy,SMR_log))
+data_expl %>% ggplot()+
+  geom_histogram(aes(SMR_log))+
+  facet_wrap(~SF_dummy)
+# Teste de Wilcox
+wilcox.test(SMR_log ~ SF_dummy,data_expl)
+##PLOTS
+data_expl %>% 
+  ggplot() +
+  geom_boxplot(aes(AB_dummy,SMR_log))
+data_expl %>% ggplot()+
+  geom_histogram(aes(SMR_log))+
+  facet_wrap(~AB_dummy)
+# Teste de Wilcox
+wilcox.test(SMR_log ~ AB_dummy,data_expl)
+##PLOTS
+data_expl %>% 
+  ggplot() +
+  geom_boxplot(aes(region_hc,SMR_log))
+data_expl %>% ggplot()+
+  geom_histogram(aes(SMR_log))+
+  facet_wrap(~region_hc)
+# Teste de Kruskal
+kruskal.test( SMR_log ~ region_hc, data = data_expl)
+FSA::dunnTest(SMR_log ~ region_hc,
+              data=data_expl,
+              method="bh")
+
+```
+
+#### Socioeconômico
+
+##### Relacionado à Idade
+
+###### CORRELAÇÃO
+
+```{r}
+data_expl %>% select(SMR_log,ESPVIDA,SOBRE40,SOBRE60,T_ENV) %>% 
+  ggpairs(progress = F)
+```
+
+* Expectativa de vida e as taxas de sobrevivência estranhamente possuem duas modas. Entre essas variáveis, expectativa de vida e taxa de envelhecimento parecem ser passíveis de inclusão no modelo.
+
+##### Relacionado à Renda
+
+###### CORRELAÇÃO
+
+```{r}
+data_expl %>% select(SMR_log,RDPC,GINI,THEIL ) %>% ggpairs(progress = F)
+```
+
+* GINI e Theil são muito semelhantes, logo um deles terá que ser excluído.
+
+##### Relacionado ao Acesso a Infraestrutura Vital
+
+###### CORRELAÇÃO
+
+```{r}
+data_expl %>% select(SMR_log,AGUA_ESGOTO, T_AGUA,
+                     T_BANAGUA,T_LIXO,T_LUZ) %>%
+  ggpairs(progress = F,
+          upper=list(continuous = wrap("cor", method = 'spearman')))
+```
+
+* Apesar das distribuições totais e espaciais serem muito parecidas, há pouca correlação entre as variáveis. Somente o acesso a banheiro e água demonstra alguma correlação.
+* *OBS*: Mesmo com baixas correlações, não acho que mais de uma das variáveis relativas ao acesso ao saneamento deva ser incluída no modelo. No entanto, a que possui maior variabilidade poderia ser uma boa escolha.
+
+##### BOXPLOTS E TESTE T
+
+```{r}
+data_expl %>% select(SMR_log, T_AGUA_dummy) %>% 
+  ggplot() +
+  geom_boxplot(aes(T_AGUA_dummy,SMR_log))
+# Teste t
+AGUA <- data_expl %>% select(SMR_log, T_AGUA_dummy) %>% 
+  pivot_wider(names_from = T_AGUA_dummy,
+              values_from = SMR_log)
+data_expl %>% ggplot(aes(SMR_log)) +
+  geom_histogram()+
+  facet_wrap(~T_AGUA_dummy)
+wilcox.test(SMR_log ~ T_AGUA_dummy,data_expl )
+t.test(AGUA$`1`[[1]],AGUA$`0`[[1]])
+
+data_expl %>% select(SMR_log, T_BANAGUA_dummy) %>% 
+  ggplot() +
+  geom_boxplot(aes(T_BANAGUA_dummy,SMR_log))
+# Teste t
+BANAGUA <- data_expl %>% select(SMR_log, T_BANAGUA_dummy) %>% 
+  pivot_wider(names_from = T_BANAGUA_dummy,
+              values_from = SMR_log)
+t.test(BANAGUA$`1`[[1]],BANAGUA$`0`[[1]])
+
+data_expl %>% select(SMR_log, T_LIXO_dummy) %>% 
+  ggplot() +
+  geom_boxplot(aes(T_LIXO_dummy,SMR_log))
+# Teste t
+LIXO <- data_expl %>% select(SMR_log, T_LIXO_dummy) %>% 
+  pivot_wider(names_from = T_LIXO_dummy,
+              values_from = SMR_log)
+t.test(LIXO$`1`[[1]],LIXO$`0`[[1]])
+
+data_expl %>% select(SMR_log,T_LUZ_dummy) %>% 
+  ggplot() +
+  geom_boxplot(aes(T_LUZ_dummy,SMR_log))
+# Teste t
+LUZ <- data_expl %>% select(SMR_log, T_LUZ_dummy) %>% 
+  pivot_wider(names_from = T_LUZ_dummy,
+              values_from = SMR_log)
+t.test(LUZ$`1`[[1]],LUZ$`0`[[1]])
+
+data_expl %>% select(SMR_log, AGUA_ESGOTO_dummy) %>% 
+  ggplot() +
+  geom_boxplot(aes(AGUA_ESGOTO_dummy,SMR_log))
+# Teste t
+ESGOTO <- data_expl %>% select(SMR_log, AGUA_ESGOTO_dummy) %>% 
+  pivot_wider(names_from
+              
+              = AGUA_ESGOTO_dummy,
+              values_from = SMR_log)
+t.test(ESGOTO$`1`[[1]],ESGOTO$`0`[[1]])
+
+```
+
+##### IDH e Distribuição Populacional
+
+###### CORRELAÇÃO
+
+```{r}
+data_expl %>% 
+  select(SMR_log,IDHM,IDHM_E,IDHM_L,IDHM_R, pesotot, pct_rur,pct_urb) %>% 
+  ggpairs(progress = F)
+```
+
+* As variáveis relacionadas ao IDHM possuem alta correlação com IDHE e IDHR, mas média com IDHL. 
+* Variáveis relacionadas à urbanização possuem alta correlação com IDHM, IDHE e IDHR e média com IDHL.
+
+##### BOXPLOTS E TESTE T
+
+```{r}
+data_expl %>% select(SMR_log, TIPO) %>% 
+  ggplot() +
+  geom_boxplot(aes(TIPO,SMR_log))
+
+kruskal.test( SMR_log~ TIPO, data = data_expl)
+FSA::dunnTest(SMR_log ~ TIPO,
+              data=data_expl,
+              method="bh")
+data_expl %>% ggplot(aes(SMR_log)) +
+  geom_histogram()+
+  facet_wrap(~TIPO)
+```
+
+Quanto ao tipo de classificação de cidade, o teste ANOVA de uma via demonstrou diferença nas médias do desfecho em relação às cidades. No entanto, ao realizar o teste de Tukey para analisar se existia diferença entre variáveis específicas, o método indicou que não há diferença entre as variáveis individualmente.
+
+## Selecionando Variáveis para Excluir da Modelagem
+
+Com base nas análises anteriores, as variáveis selecionadas para uma reanálise entre elas são:
+
+* SF_dummy
+* coverage_ANS
+* ESPVIDA
+* T_ENV
+* RDPC
+* GINI
+* T_AGUA
+* T_LIXO
+* T_LUZ
+* IDHM_E
+* IDHM
+* TIPO
+
+```{r}
+data_expl %>% select(SMR_log, IDHM_E, T_ENV, ESPVIDA,
+                     RDPC, GINI, T_AGUA, T_LIXO, T_LUZ, pct_urb,
+                     PC_COBERTURA_SF,coverage_ANS) %>% cor(method = "spearman") %>% 
+  corrplot::corrplot(tl.srt=50,type = 'lower', method = 'square',
+                     addCoef.col = 'black', order = "hclust")
+```
+
+* Ao organizar as variáveis, a taxa de urbanização parece ter correlação moderada a alta com renda per capita, taxa de acesso a água e IDHM educacional. Renda per capita também parece ter relação com expectativa de vida.
+
+# Salvando os Dados para Modelagem
+
+```{r}
+data_model <- data %>% dplyr::select(code_muni, sum_pop, n_deaths,expected, IDHM_E,IDHM,
+                                     T_ENV, ESPVIDA,RDPC,GINI, T_AGUA_dummy, T_LIXO_dummy, 
+                                     T_LUZ_dummy, TIPO,SF_dummy,coverage_ANS, region_hc,SMR)
+write_rds(data_model, "data//data_model.rds")
+```

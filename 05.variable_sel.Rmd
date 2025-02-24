@@ -1,0 +1,215 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+# Seleção de Variáveis
+
+Para este processo de seleção de variáveis, adotaremos uma abordagem hierárquica, introduzindo variáveis que têm uma maior relação de causalidade ou correlação com outras variáveis que podem afetar o desfecho antes de introduzir variáveis relacionadas a essa hierarquia superior.
+
+Para começar, vamos selecionar as variáveis socioeconômicas.
+
+```{r include=FALSE}
+library(tidyverse)
+# library(spdep)
+# library(INLA)
+library(mapview)
+library(tidyverse)
+library(caret)
+library(leaps)
+library(MASS)
+library(sf)
+```
+
+```{r include=FALSE}
+# Desabilitar notação científica
+options(scipen=999)
+```
+
+```{r}
+# Dados e resumo
+data_mod <- read_rds("data//data_model.rds") %>% mutate(TIPO = TIPO %>% as.factor())
+data_mod %>% summary()
+data_mod %>% colnames()
+```
+
+```{r}
+# Dados para modelagem
+data_glm <- data_mod %>% st_drop_geometry()
+data_glm$TIPO <- relevel(data_glm$TIPO, ref="Urbano")
+```
+
+## 01 - Variáveis Socioeconômicas e Demográficas (Distais)
+
+As variáveis nesta categoria incluem:
+
+* GINI
+* IDHM
+* RDPC
+* IDHM_E
+* ESPVIDA
+* T_ENV
+* TIPO
+
+Por critérios teóricos, a variável ESPVIDA será excluída, conforme um estudo (referência [10.1002/ijc.33114]) que aponta que o uso da expectativa de vida pode não ser adequado para avaliar a associação entre fatores socioeconômicos e a mortalidade por câncer, uma vez que essa variável é influenciada por outras causas de morte e diretamente pelo câncer.
+
+Além disso, a variável IDHM será excluída, uma vez que, embora seja importante e explicativa, por ser composta por outros componentes, sua inclusão pode reduzir seu poder explicativo. De qualquer forma, o IDHM é uma síntese de outros indicadores, que serão introduzidos ou foram eliminados (IDHM_E, RDPC, ESPVIDA).
+
+### Regressão Stepwise
+
+#### Critério AIC
+
+```{r}
+set.seed(123)
+# Função para realizar o método stepwise
+fun_glm_01 <- glm.nb(n_deaths ~  
+                       GINI + RDPC + IDHM_E  + 
+                       TIPO + T_ENV + offset(log(expected)), data = data_glm)
+# Executando o método stepwise com base no critério AIC
+AIC_both_01 <- stepAIC(fun_glm_01, direction = "both", trace = F)
+# Sumário dos resultados
+summary(AIC_both_01)
+```
+
+O resultado da análise AIC sugere a inclusão das variáveis GINI, TIPO e T_ENV. A variável GINI aborda a desigualdade, a variável TIPO de cidade aponta condições semelhantes para um grupo de cidadãos e a variável T_ENV lida com a questão da idade e seu impacto na incidência de câncer.
+
+### Análise de Componentes Principais (PCA)
+
+```{r}
+library(factoextra)
+library(dplyr)
+# Transformando as variáveis em numéricas
+data_PCA_01 <- data_mod %>% 
+  dplyr::select(GINI,RDPC,IDHM_E, T_ENV, TIPO) %>% 
+  sf::st_drop_geometry() %>% 
+  mutate(TIPO = TIPO %>% as.numeric) %>% 
+  as.data.frame(row.names = data_mod$code_muni)
+
+# Realizando a análise de PCA
+data_PCA_01 <- prcomp(data_PCA_01, scale. = TRUE)
+
+# Resumo dos resultados do PCA
+summary(data_PCA_01)
+
+# Plot dos resultados do PCA
+# Visualizar os autovalores (scree plot). Mostrar a porcentagem de variância explicada por cada componente principal
+fviz_eig(data_PCA_01)
+# Gráfico de indivíduos. Indivíduos com um perfil semelhante são agrupados.
+fviz_pca_ind(data_PCA_01,
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE)
+# Gráfico de variáveis. Variáveis correlacionadas positivamente apontam para o mesmo lado do gráfico. Variáveis correlacionadas negativamente apontam para lados opostos do gráfico.
+fviz_pca_var(data_PCA_01,
+             col.var = "contrib", # Colorir de acordo com as contribuições para o componente principal
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE)
+# Resultados para Variáveis
+res.var <- get_pca_var(data_PCA_01)
+res.var$contrib        # Contribuições para os componentes principais
+```
+
+A análise de PCA não indica uma variável dominante e sugere que nenhuma variável se destaca na explicação da variação nas observações.
+
+#### Conclusão
+
+Com base nas análises anteriores, as variáveis a serem incorporadas ao modelo são:
+
+* GINI
+* TIPO
+* T_ENV
+
+Nenhuma variável componente do IDHM, que é comumente usada, foi selecionada. A variável GINI aborda a desigualdade, a variável TIPO de cidade aponta condições semelhantes para um grupo de cidadãos e a variável demográfica T_ENV lida com a questão da idade e seu impacto na incidência de câncer, embora seja importante lembrar que incidência não é igual a mortalidade.
+ 
+## 02 - Adição de Variáveis Relacionadas à Cobertura de Serviços Básicos
+
+Neste caso, o objetivo é analisar se a adição de algumas dessas variáveis intermediárias diminuiria ou anularia o efeito das variáveis anteriores, mais distantes.
+
+As variáveis a serem testadas são:
+
+* T_AGUA_dummy
+* T_LIXO_dummy
+* T_LUZ_dummy
+* region_hc
+* coverage_ANS
+* SF_dummy
+
+### Regressão Stepwise
+
+#### Critério AIC
+
+```{r}
+set.seed(123)
+# Função para realizar o método stepwise
+fun_glm_02 <- glm.nb(n_deaths ~ GINI + TIPO + T_ENV + 
+                       T_LIXO_dummy + T_LUZ_dummy + T_AGUA_dummy +
+                       SF_dummy + coverage_ANS + region_hc +
+                       offset(log(expected)), data = data_glm)
+# Executando o método stepwise com base no critério AIC
+AIC_both_02 <- stepAIC(fun_glm_02, direction = "both", trace = F)
+# Sumário dos resultados
+summary(AIC_both_02)
+```
+
+### Análise de Componentes Principais (PCA)
+
+```{r}
+# Transformando variáveis em numéricas
+data_PCA_02 <- data_mod %>% 
+  dplyr::select( T_AGUA_dummy, T_LIXO_dummy, T_LUZ_dummy,
+                 SF_dummy, coverage_ANS, region_hc) %>% 
+  sf::st_drop_geometry() %>% 
+  mutate(T_LIXO_dummy = T_LIXO_dummy %>% 
+           as.numeric(), 
+         T_LUZ_dummy = T_LUZ_dummy %>% 
+           as.numeric(),
+         T_AGUA_dummy = T_AGUA_dummy %>% 
+           as.numeric(),
+         region_hc = region_hc %>% 
+           as.numeric(),
+         SF_dummy = SF_dummy %>% as.numeric()) %>% 
+  as.data.frame(row.names = data_mod$code_muni)
+
+# Realizando a análise de PCA
+data_PCA_02 <- prcomp(data_PCA_02, scale. = TRUE)
+
+# Resumo dos resultados do PCA
+summary(data_PCA_02)
+
+# Plot dos resultados do PCA
+# Visualizar os autovalores (scree plot). Mostrar a porcentagem de variância explicada por cada componente principal
+fviz_eig(data_PCA_02)
+# Gráfico de indivíduos. Indivíduos com um perfil semelhante são agrupados.
+fviz_pca_ind(data_PCA_02,
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE)
+# Gráfico de variáveis. Variáveis correlacionadas positivamente apontam para o mesmo lado do gráfico. Variáveis correlacionadas negativamente apontam para lados opostos do gráfico.
+fviz_pca_var(data_PCA_02,
+             col.var = "contrib", # Colorir de acordo com as contribuições para o componente principal
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE)
+# Resultados para Variáveis
+res.var <- get_pca_var(data_PCA_02)
+res.var$contrib        # Contribuições para os componentes principais
+```
+
+Esta análise de PCA revelou um equilíbrio maior entre os componentes e uma variação considerável na capacidade explicativa da variância pelas variáveis. Nenhuma das variáveis parece ter uma grande capacidade explicativa para a variação nas observações.
+
+#### Conclusão
+
+Nenhuma das variáveis demonstrou ter valor ao serem adicionadas ao modelo. Embora algumas dessas variáveis sejam importantes para a pergunta de estudo, suas baixas variações, observadas nas análises anteriores, e a ausência de impacto significativo enfraquecem sua inclusão. Talvez, se o método de coleta dessas variáveis fosse semelhante ao que é feito atualmente, elas poderiam ter mais valor, mas isso não pode ser testado.
+
+## Conclusão Geral
+
+As seguintes variáveis devem ser incorporadas:
+
+* GINI
+* TIPO
+* T_ENV
+
+Quanto às análises de PCA, ambas as análises com diferentes variáveis demonstraram uma amostra bastante homogênea, sem grandes outliers ou formação de grupos distintos.
+

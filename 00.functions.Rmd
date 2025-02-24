@@ -1,0 +1,342 @@
+---
+title: "Funções"
+output: html_document
+---
+
+```{r bibs , message=FALSE, warning=FALSE, paged.print=FALSE}
+# Suprimir notação científica e carregar pacotes
+options(scipen=999)
+options(tidyverse.quiet = TRUE)
+# Carregar pacotes
+library(tidyverse)
+library(geobr)
+library(sf)
+library(mapview)
+library(spdep)
+library(lubridate)
+library(ggridges)
+```
+
+# Carregando Dados
+
+```{r loading}
+# Carregar tabela CID-10
+cid <- readxl::read_excel("data//CID-10.xltx") %>% select(CAT,DESCRICAO)
+# Carregar dados de óbitos
+data_ob <- read_rds("data//data_ob.rds")
+# Carregar tabela município, microrregião e macrorregião
+tab_mun_micro_macro <- read.csv("data//tab_mun_micro_macro_br.csv", 
+                                sep = ";", encoding = "UTF-8")
+se_minas <- tab_mun_micro_macro %>% filter(UF == "MG" & MACRO_COD == "3107")
+cods <- se_minas$MUN_COD %>% str_sub(end =6)
+# Carregar dados resumidos
+data_summarized <- read_rds('data//data_summarized.rds')
+# Carregar dados de taxas padronizadas
+data_std_rate <- read_rds('data//data_std_rate.rds')
+# Carregar função filter_ob
+load('functions//filter_ob.Rdata')
+# Filtrar os dados
+data <- filter_ob()
+```
+
+# Descritivo
+
+## Gráfico de Barras
+
+Função de gráfico de barras que mostra os dados de acordo com o número de CIDs que você deseja ver (`qtd`) e a proporção entre homens e mulheres (`relative`).
+
+```{r }
+
+bar_plot <- function(data, qtd = 10, relative = F){
+  # Criando filtro
+  filter_freq <- data %>% 
+    count(DESCRICAO) %>% arrange(desc(n)) %>% head(qtd)
+  filter_freq <- filter_freq$DESCRICAO
+  
+  if (relative == T){
+    data <- data %>% filter (DESCRICAO %in% filter_freq) %>% 
+      group_by(SEXO, DESCRICAO) %>% summarise(n = n()) %>% 
+      arrange(desc(n))
+    # Plotagem
+    data %>% ggplot(aes(DESCRICAO,n, fill = SEXO))+
+      geom_bar(stat = 'identity', position ='fill')+
+      coord_flip()+
+      xlab('')+
+      ylab('')+
+      scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 25))
+    
+  } else {
+    # Criando filtro
+    data <- data %>% filter (DESCRICAO %in% filter_freq) %>% 
+      group_by(DESCRICAO) %>% summarise(n = n()) %>% 
+      arrange(desc(n))
+    # Plotagem
+    data %>% ggplot() +
+      geom_bar(aes(reorder(DESCRICAO,desc(n)),  n), stat = "identity")+
+      xlab('')+
+      ylab('')+
+      coord_flip()+
+      scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 25))
+  }
+}
+save('bar_plot', file = 'functions//bar_plot.Rdata')
+
+bar_plot(data,relative = F)
+bar_plot(data,relative = T)
+```
+
+### Gráfico de Barras de um Ano
+
+```{r gráfico de barras}
+
+bar_plot <- function(data, qtd = 10, relative = F){
+  # Criando filtro
+  filter_freq <- data %>% 
+    count(DESCRICAO) %>% arrange(desc(n)) %>% head(qtd)
+  filter_freq <- filter_freq$DESCRICAO
+  
+  if (relative == T){
+    data <- data %>% filter (DESCRICAO %in% filter_freq) %>% 
+      group_by(SEXO, DESCRICAO) %>% summarise(n = n()) %>% 
+      arrange(desc(n))
+    # Plotagem
+    data %>% ggplot(aes(DESCRICAO,n, fill = SEXO))+
+      geom_bar(stat = 'identity', position ='fill')+
+      coord_flip()+
+      xlab('')+
+      ylab('')+
+      scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 25))
+    
+  } else {
+    # Criando filtro
+    data <- data %>% filter (DESCRICAO %in% filter_freq) %>% 
+      group_by(DESCRICAO) %>% summarise(n = n()) %>% 
+      arrange(desc(n))
+    # Plotagem
+    data %>% ggplot() +
+      geom_bar(aes(reorder(DESCRICAO,desc(n)),  n), stat = "identity")+
+      xlab('')+
+      ylab('')+
+      coord_flip()+
+      scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 25))
+  }
+}
+save('bar_plot', file = 'functions//bar_plot.Rdata')
+
+bar_plot(data,relative = F)
+bar_plot(data,relative = T)
+```
+
+## Histogramas
+
+```{r histogram}
+
+hist_plot <- function(data, qtd = 10, bins = 30, all = F, sex = F){
+  if (all == T){
+    if(sex == T){    
+      data = data
+      data %>% 
+        ggplot(aes(x = IDADEanos)) +
+        geom_histogram(aes(fill = SEXO), bins = bins, alpha = 0.6)+
+        xlab('Idade') 
+    } else {
+      
+      data = data
+      data %>% 
+        ggplot(aes(x = IDADEanos)) +
+        geom_histogram(bins = bins)+
+        xlab('Idade')
+    }
+  } else {
+    if (sex == T)
+      stop()
+    # Criando filtro
+    filter_freq <- data %>%
+      count(DESCRICAO) %>% arrange(desc(n)) %>% head(qtd)
+    filter_freq <- filter_freq$DESCRICAO
+    # Aplicando filtro
+    data <- data %>% filter (DESCRICAO %in% filter_freq)
+    # Plotagem
+    data %>% 
+      ggplot(aes(x = IDADEanos)) +
+      geom_histogram(bins = bins)+
+      facet_wrap(~DESCRICAO, labeller = labeller(groupwrap = label_wrap_gen(15)))+
+      xlab('Idade')+
+      ylab("")
+  }
+}
+save('hist_plot', file = 'functions//hist_plot.Rdata')
+hist_plot(data)
+```
+
+## Gráfico de Densidade
+
+```{r densidade}
+density_plot <- function(data,qtd = 10, sex = F){
+  # Criando filtro
+  filter_freq <- data %>%
+    count(DESCRICAO) %>% arrange(desc(n)) %>% head(qtd)
+  filter_freq <- filter_freq$DESCRICAO
+  # Aplicando filtro
+  data <- data %>% filter (DESCRICAO %in% filter_freq)
+  # Plotagem
+  if (sex == T){
+    data %>% 
+      ggplot(aes (IDADEanos,y= DESCRICAO ,fill = DESCRICAO))+
+      ggridges::geom_density_ridges(alpha = 0.6)+
+      xlab('Idade')+ 
+      theme(legend.position = "none")+
+      facet_wrap(~SEXO, labeller = labeller(groupwrap = label_wrap_gen(15)))
+  } else {
+    data %>% 
+      ggplot(aes (IDADEanos,y= DESCRICAO ,fill = DESCRICAO))+
+      ggridges::geom_density_ridges(alpha = 0.6)+
+      xlab('Idade')+ 
+      scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 20))+
+      theme(legend.position = "none")+
+      ylab("")
+  }
+}
+save('density_plot', file = 'functions//density_plot.Rdata')
+density_plot(data)
+```
+
+## Treemap
+
+```{r}
+tree_map <- function(data, qtd = 10, include.others = T){
+  
+  library(treemapify)
+  filter_freq <- data %>% 
+    count(DESCRICAO) %>% arrange(desc(n)) %>% head(qtd)
+  filter_freq <- filter_freq$DESCRICAO
+  if (include.others == T){
+    
+    data <- data %>% 
+      mutate(DESCRICAO = ifelse(DESCRICAO %in% filter_freq, DESCRICAO, "Outros"))
+    data %>% 
+      group_by(DESCRICAO) %>% summarise(N = n()) %>% 
+      ggplot(aes(area = N, fill = DESCRICAO, label = DESCRICAO %>% 
+                   str_wrap(width = 15)))+
+      geom_treemap()+
+      geom_treemap_text()+
+      
+      theme(legend.position = "none")
+  } else {
+    data <- data %>% filter(DESCRICAO %in% filter_freq)
+    data %>% 
+      group_by(DESCRICAO) %>% summarise(N = n()) %>% 
+      ggplot(aes(area = N, fill = DESCRICAO, label = DESCRICAO %>% 
+                   str_wrap(width = 15)))+
+      geom_treemap()+
+      geom_treemap_text()+
+      theme(legend.position = "none")
+  }
+}
+
+## Alterar a cor
+save('tree_map', file = 'functions//tree_map.Rdata')
+tree_map(data)
+
+```
+
+## Pirâmide
+
+```{r}
+data %>%
+  drop_na(IDADEanos) %>% 
+  mutate(age_group = cut(IDADEanos, c(seq(0, 80, by = 5), Inf), 
+                         include.lowest = T, right = F)) %>% 
+  group_by(SEXO, age_group) %>% 
+  summarise(n = n()) %>% mutate(n = ifelse(SEXO == "Feminino", -n, n),
+                                age_group = age_group %>% 
+                                  str_remove_all("\\[|\\)|\\]") %>% 
+                                  str_replace("80,Inf","80+") %>%
+                                  str_replace(",","-") %>% 
+                                  str_replace("5-10","05-10")) %>% 
+  ggplot(aes(n, age_group, fill= SEXO))+
+  geom_bar(stat = "identity")
+```
+
+# Mapas e Correlação
+
+## Mapas para os dados completos
+
+```{r mapas}
+map_mun <- function(data, variable = "rate", palette = "RdBu", satellite = F){
+  if (satellite == T){
+    library(RColorBrewer)
+    mapview(data, zcol = variable, col.regions=brewer.pal(9, palette))
+  } else{
+    data %>%
+      ggplot()+
+      geom_sf(aes(fill = !! sym(variable)))+
+      theme_bw()+
+      scale_fill_distiller(palette = palette)
+  }}
+save('map_mun', file = "functions//map_mun.Rdata")
+map_mun(data_summarized)
+```
+
+## Mapas para dados padronizados
+
+```{r}
+map_mun_std <- function(data, variable = "Adj", palette = "RdBu", satellite = F){
+  if (satellite == T){
+    data %>% select(code_muni,name_muni, variable)
+    mapview(data, zcol = 'Adj', col.regions=brewer.pal(9,palette))
+  } else{
+    data %>%
+      ggplot()+
+      geom_sf(aes(fill = !! sym(variable)))+
+      theme_bw()+
+      scale_fill_distiller(palette = palette)
+  }}
+save(map_mun_std,file= "functions//map_mun_std.Rdata")
+
+```
+
+## Gráficos de Correlação
+
+```{r}
+cor_plot_smz <- function(data, variables = 'all',
+                         method = 'pearson'){
+  library(GGally)
+  data = data %>% st_drop_geometry()
+  
+  if (str_detect(variables,"all")[1]) {
+    variables = colnames(data)[!colnames(data) %in% 
+                                 c('code_muni','Município','name_muni')]
+  }else{
+    variables = variables
+  }
+  # Gráfico de correlação
+  ggpairs(data, columns= variables,
+          lower=list(continuous="smooth"),
+          upper=list(continuous = wrap("cor", method = method)),progress = F)
+}
+save(cor_plot_smz, file = "functions//cor_plot_smz.Rdata")
+
+```
+
+```{r}
+cor_plot_std <- function(variables = 'all',
+                         method = 'pearson'){
+  library(GGally)
+  data_std_rate = data_std_rate %>% st_drop_geometry()
+  if (str_detect(variables,"all")[1]) {
+    variables = colnames(data_std_rate)[!colnames(data_std_rate) %in%
+                                          c('code_muni','Município',
+                                            'name_muni','LCI','UCI')]
+  } else {
+    variables = variables
+  }
+  
+  ggpairs(data_std_rate, columns= variables,
+          
+          lower=list(continuous="smooth"),
+          upper=list(continuous =
+                       
+                       wrap("cor", method = method)),progress = F)
+}
+```

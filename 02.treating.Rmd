@@ -1,0 +1,387 @@
+---
+title: "Tratamento de Dados"
+output: html_document
+date: "2023-01-30"
+---
+
+```{r bibs , message=FALSE, warning=FALSE, paged.print=FALSE}
+# Remover notação científica e carregar pacotes
+options(scipen=999)
+options(tidyverse.quiet = TRUE)
+# Carregando pacotes
+library(tidyverse)
+library(spdep)
+library(lubridate)
+```
+
+# *Carregando Dados*
+
+```{r loading}
+## *Selecionando cidades na região*
+tab_mun_micro_macro <- read.csv("data//tab_mun_micro_macro_br.csv", 
+                                sep = ";", encoding = "UTF-8")
+se_minas <- tab_mun_micro_macro %>% filter(UF == "MG" & MACRO_COD == "3107")
+# Filtrando com os códigos das cidades
+cods <- se_minas$MUN_COD %>% str_sub(end =6)
+# Baixando o mapa em sf (formato IBGE gerado pelo IPEA)
+munMG <- read_rds('data//munMG.rds')
+# O DATASUS usa apenas 6 dígitos para os códigos das cidades
+munMG$code_muni <- str_sub(munMG$code_muni, end = 6)
+# Filtrando dados de Minas Gerais com base na região sudeste
+se_map <- munMG %>% filter(code_muni %in% cods) %>% 
+  select(code_muni, name_muni)
+# Regiões vizinhas
+w.nb <- poly2nb(se_map)
+## *Causas de morte*
+cid <- readxl::read_excel("data//CID-10.xltx") %>% select(CAT,DESCRICAO)
+data_ob <- read_rds("data//data_ob.rds")
+## Dados populacionais
+mun_pop <- read_rds("data//mun_pop.rds")
+## Censo
+census_2010 <- read_rds("data//census_2010.rds")
+# Cobertura APS
+aps_coverage_2010 <- read_rds("data//aps_coverage_2010.rds")
+# ANS
+coverage_ANS <- read_rds("data//covarege_ANS.rds") 
+# Variáveis
+variables_list <- read_rds('data//variables_list.rds')
+```
+
+# Filtragem de Dados
+
+## Função para filtrar o conjunto de dados
+
+```{r filter}
+filter_ob <- function(sex = 'FM',age_start = 0,age_end = 200, 
+                      year_start = 2010, year_end = 2019, mun = "all"){
+  options(tidyverse.quiet = TRUE)
+  require(tidyverse)
+  if (sex == "FM")
+    sex = c("Feminino", "Masculino")
+  if (str_detect(mun,"all")[1])
+    mun =  c(cods)
+  # Salvando objeto no ambiente
+  data_ob %>% 
+    filter(
+      grepl("^C|^D46", CAUSABAS) &
+        SEXO %in% sex &
+        IDADEanos %in% c(age_start:age_end) &
+        DTOBITO >= year_start &
+        DTOBITO <= year_end&
+        CODMUNRES %in% mun) %>% 
+    mutate(DESCRICAO = 
+             DESCRICAO %>% 
+             # Removendo o início do nome das neoplasias
+             str_remove("Neoplasia maligna dos |Neoplasia maligna das |Neoplasia maligna, |Neoplasia maligna da |Neoplasia maligna do ") %>% 
+             str_to_sentence()
+    )
+}
+save('filter_ob', file = 'functions//filter_ob.Rdata')
+```
+
+### Função para filtrar e categorizar dados com base na idade
+
+Isso é útil para entender melhor os dados agregados e calcular uma taxa padronizada
+
+```{r}
+filter_ob_cat_age <- function (sex = 'FM', 
+                               age_start = "00 a 04 years",
+                               age_end = "80 years or more", 
+                               year_start = 2010, year_end = 2019, 
+                               mun = "all"){
+  if(sex == "F"){
+    sex = c("Feminino")
+  }
+  if(sex == "M"){
+    sex = c("Masculino")
+  }
+  if (sex == "FM")
+    sex = c("Feminino", "Masculino")
+  if (mun == "all")
+    mun = cods
+  # Lógica de idade
+  age_start = str_extract_all(age_start,"[0-9]+")[[1]][1] %>% 
+    as.numeric()
+  if (age_end == "80 years or more"){
+    age_end = Inf
+  } else {
+    age_end = str_extract_all(age_end,"[0-9]+")[[1]][2] %>% 
+      as.numeric()
+  }
+ # Gerando dados filtrados
+  data_filter <- data_ob %>% 
+    filter(
+      grepl("^C|^D46", CAUSABAS) &
+        SEXO %in% sex &
+        DTOBITO >= year_start &
+        DTOBITO <= year_end &
+        CODMUNRES %in% mun)
+  # Dividindo a idade e resumindo
+  data_cat_age <- data_filter %>% drop_na(IDADEanos) %>% 
+    mutate(age_group = cut(IDADEanos, c(seq(0, 80, by = 5), Inf), 
+                           include.lowest = T, right = F)) %>% 
+    filter (IDADEanos >= age_start & IDADEanos <= age_end) # Filtrando por idade
+  data_cat_age <- data_cat_age %>% group_by(age_group, CODMUNRES) %>% 
+    summarise(n = n()) %>% 
+    pivot_wider(names_from = age_group, values_from = n, values_fill=0)
+  # Adicionando nomes às colunas
+  colorder <- c('mun')
+  for (i in 1:(length(data_cat_age)-1)){
+    col <- paste(
+      str_extract_all(
+        colnames(data_cat_age)[2:length(data_cat_age)],"[0-9]+")[[i]][1],
+      'to',
+      as.integer(
+        str_extract_all(
+          colnames(data_cat_age)[2:length(data_cat_age)],"[0-9]+")[[i]][2])-1,
+      'years')
+    col <- ifelse(col %>% str_detect("NA"), "80 years or more", col)
+    colorder <- c(colorder,col)
+  }
+  colorder <<- colorder
+  
+  colnames(data_cat_age) <- colorder
+  
+  return(data_cat_age)
+}
+save(filter_ob_cat_age,file ="functions//filter_ob_cat_age.Rdata")
+filter_ob_cat_age()
+```
+
+
+# *Agregando Dados*
+
+## *Resumindo dados de mortalidade e adicionando dados espaciais*
+
+Agora precisamos agregar os dados com base nos municípios e no tempo. Vamos criar uma função para facilitar a análise de diferentes períodos de tempo.
+
+```{r}
+summarize_ob <- function(sex = 'MF', 
+                         age_start = "00 to 04 years",
+                         age_end = "80 years or more",
+                         year_start = 2010, year_end = 2019,mun = "all"){
+  if (str_detect(mun,"all")[1])
+    mun = cods
+  # Processing population to make rates
+  if(sex == "F"){
+    sex = c("Feminino")
+    mun_pop_ <- mun_pop %>% select(-pop) %>% mutate(pop = f_pop) %>% 
+      select(-c(f_pop, m_pop))
+  }
+  if(sex == "M"){
+    sex = c("Masculino")
+    mun_pop_ <- mun_pop %>% select(-pop) %>% mutate(pop = m_pop) %>% 
+      select(-c(f_pop, m_pop))
+  }
+  if(sex == "MF"){
+    sex = c("Feminino", "Masculino")
+    mun_pop_ <- mun_pop %>% select(-c(f_pop, m_pop))
+  }
+  # making the classes of age as factor for filtering
+  mun_pop_ <- mun_pop_ %>% 
+    mutate(age_group = age_group %>%
+             str_remove("From ") %>%
+             str_replace_all("0 to 4 years","00 to 04 years") %>% 
+             str_replace_all("5 to 9 years", "05 to 09 years"),
+           age_fct = age_group %>% as.factor()) %>% arrange(age_fct) %>% 
+    mutate(age_fct = age_fct %>% as.integer())
+  
+  age_start_ <-  filter(mun_pop_, age_group == age_start)[1,5] %>% as.numeric()
+  age_end_ <-  filter(mun_pop_, age_group == age_end)[1,5] %>% as.numeric()
+  
+  mun_pop_ <- mun_pop_ %>% 
+    filter(year >= year_start & year <= year_end,
+           age_fct %in% c(age_start_:age_end_),
+           grepl("^31", mun),
+           pop>0) %>%
+    group_by(mun) %>% 
+    summarise(sum_pop = sum(pop)) %>% 
+    select(mun,sum_pop) %>%
+    mutate(mun=as.character(mun)) %>% 
+    filter(mun %in% mun)
+  # age logical for processing death
+  age_start = str_extract_all(age_start,"[0-9]+")[[1]][1] %>% 
+    as.numeric()
+  if (age_end == "80 years or more"){
+    age_end = Inf
+  } else {
+    age_end = str_extract_all(age_end,"[0-9]+")[[1]][2] %>% 
+      as.numeric()
+  }
+  #saving object 
+  data_summarize <-  data_ob %>% 
+    filter(
+      grepl("^C|^D46", CAUSABAS) &
+        SEXO %in% sex &
+        IDADEanos %in% c(age_start:ifelse(age_end == Inf, 150, age_end)) &
+        DTOBITO >= year_start &
+        DTOBITO <= year_end &
+        CODMUNRES %in% cods) %>% 
+    group_by(CODMUNRES) %>% 
+    summarize(n_deaths = n())
+  # summarizing the couting
+  data_summarize <- left_join(data_summarize,mun_pop_, 
+                              by = c('CODMUNRES'= 'mun')) %>% 
+    mutate(rate = round(n_deaths/sum_pop*10^5,2))
+  # adding basic care coverage
+  data_summarize <- left_join(data_summarize, aps_coverage_2010,
+                              by = c('CODMUNRES'= 'mun'))
+  # adding ANS data
+  data_summarize <- left_join(data_summarize, coverage_ANS,
+                              by = c('CODMUNRES'= 'mun'))
+  #Adding census data
+  data_summarize <- left_join(data_summarize,census_2010, 
+                              by = c("CODMUNRES" = "Codmun6"))
+  # Adding geom variable
+  data_summarized <- left_join(se_map, data_summarize, 
+                               by = c("code_muni" = "CODMUNRES"))
+  return(data_summarized)
+}
+
+save('summarize_ob', file = "functions//summarize_ob.Rdata")
+data_summarized <- summarize_ob()
+```
+
+### Padronizando dados
+
+Com base na população mundial padrão
+
+```{r}
+std_rate <-  function (sex = "MF", 
+                       age_start = "00 to 04 years",
+                       age_end = "80 years or more", 
+                       year_start = 2010, year_end = 2019, 
+                       mun = "all"){
+  if (str_detect(mun,"all")[1])
+    mun = cods
+  # Processando a população para cálculo das taxas
+  if(sex == "F"){
+    sex = c("Feminino")
+    mun_pop_ <- mun_pop %>% select(-pop) %>% mutate(pop = f_pop) %>% 
+      select(-c(f_pop, m_pop))
+  }
+  if(sex == "M"){
+    sex = c("Masculino")
+    mun_pop_ <- mun_pop %>% select(-pop) %>% mutate(pop = m_pop) %>% 
+      select(-c(f_pop, m_pop))
+  }
+  if(sex == "MF"){
+    sex = c("Feminino", "Masculino")
+    mun_pop_ <- mun_pop %>% select(-c(f_pop, m_pop))
+  }
+  library(epitools)
+  # Gerando o banco de dados
+  data_cat_age <- filter_ob_cat_age(year_start = year_start, year_end = year_end)
+  colorder <- data_cat_age %>% colnames()
+  # População padrão mundial
+  standard <- read.csv("data//standard.csv",header = T) %>% 
+    mutate(MUN_CODE = MUN_CODE %>% as.integer())
+  colnames(standard) <- colorder
+  # Dados de população
+  mun_pop_ <- mun_pop %>% 
+    mutate(age_group = age_group %>% str_remove("From ")) %>% 
+    filter (year >= year_start & year <= year_end) %>% 
+    group_by(age_group, mun) %>%
+    summarise(pop = sum(pop)) %>%
+    pivot_wider(names_from = age_group, values_from = pop)  %>%
+    relocate(`5 to 9 years`, .before = `10 to 14 years`)
+  ## Loop para estimar a taxa padronizada para todos os municípios
+  taxapad_total <- tibble()
+  for (i in cods){
+    p <- mun_pop_ %>% filter(mun == i) 
+    t <- filter(data_cat_age, mun == i)  %>% mutate(mun = mun %>% as.integer())
+    temptib <- bind_rows(t,p,standard)
+    temp <- ageadjust.direct(count=temptib[1,c(2:18)],
+                             pop=temptib[2,c(2:18)],
+                             stdpop=temptib[3,c(2:18)])
+    tib <- tibble(mun = i, Taxa = round(temp*100000,2)[1], 
+                  Taxa_padronizada = round(temp*100000,2)[2])
+    taxapad_total <- taxapad_total %>% bind_rows(tib)
+  }
+  # Adicionando dados do censo
+  taxapad_total <- left_join(taxapad_total,census_2010, by = c("mun" = "Codmun6"))
+  # Adicionando cobertura da atenção básica
+  taxapad_total <- left_join(taxapad_total, aps_coverage_2010, by = c('mun'= 'mun'))
+  # Adicionando dados da ANS
+  taxapad_total <- left_join(taxapad_total, coverage_ANS,by = c('mun'= 'mun'))
+  # Adicionando geometria
+  taxapad_total <- left_join(se_map, taxapad_total, by = c("code_muni" = "mun"))
+  return(taxapad_total)
+}
+save('std_rate', file = "functions//std_rate.Rdata")
+std_rate()
+write_rds(data_std_rate,"data//data_std_rate.rds")
+
+```
+
+## Óbitos Esperados
+
+```{r}
+SMR <- function(sex = "MF", 
+                year_start = 2010, year_end = 2019, 
+                mun = "all"){
+  library(SpatialEpi)
+  if (str_detect(mun,"all")[1])
+    mun = cods
+  # Processando a população para calcular as taxas
+  if(sex == "F"){
+    sex = c("Feminino")
+    mun_pop_ <- mun_pop %>% select(-pop) %>% mutate(pop = f_pop) %>% 
+      select(-c(f_pop, m_pop))
+  }
+  if(sex == "M"){
+    sex = c("Masculino")
+    mun_pop_ <- mun_pop %>% select(-pop) %>% mutate(pop = m_pop) %>% 
+      select(-c(f_pop, m_pop))
+  }
+  if(sex == "MF"){
+    sex = c("Feminino", "Masculino")
+    mun_pop_ <- mun_pop %>% select(-c(f_pop, m_pop))
+  }
+  pop_e <- mun_pop_ %>% 
+    mutate(age_group = age_group %>% str_remove("From ")) %>% 
+    filter (year >= year_start & year <= year_end) %>% 
+    filter(mun %in% cods) %>% 
+    group_by(age_group, mun) %>%
+    summarise(pop = sum(pop))
+  
+  # Dados de óbitos
+    # Salvando objeto no ambiente
+  data_filter <-  data_ob %>% 
+    filter(
+      grepl("^C|^D46", CAUSABAS) &
+        SEXO %in% sex &
+        DTOBITO >= year_start &
+        DTOBITO <= year_end &
+        CODMUNRES %in% mun)
+  total_ob_e <- data_filter %>% 
+    drop_na(IDADEanos) %>% 
+    mutate(age_group = cut(IDADEanos, c(seq(0, 80, by = 5), Inf), 
+                           include.lowest = T, right = F)) 
+  total_ob_e <- total_ob_e %>% group_by(age_group, CODMUNRES) %>% 
+    summarise(n = n()) %>% 
+    pivot_wider(names_from = age_group, values_from = n, values_fill=0)
+  # Renomeando colunas
+  colnames(total_ob_e) <- colorder
+  long_data <- total_ob_e %>% pivot_longer(c(2:18), names_to = "age_group") %>% 
+    mutate(mun = mun %>% as.integer()) 
+  # Mesclando
+  long_data <- left_join(long_data, pop_e, by = c("mun", "age_group"))
+  # Estimando E
+  COD_MUN <- as.character(unique(total_ob_e$mun))
+  n <- length(COD_MUN)
+  E_ob <- data.frame(mun = COD_MUN, expected=rep(NA,n))
+  E_ob$expected <- round(SpatialEpi::expected(population=long_data$pop, 
+                                  cases=long_data$value, n.strata= 17))
+  # Somando linhas
+  total_ob_e$observed <- rowSums(total_ob_e[,-1])
+  # Mesclando com dados observados
+  E_ob <- left_join(E_ob,total_ob_e[,c(1,19)], by = c("mun")) %>% as_tibble()
+  E_ob %>% arrange(desc(expected))
+  
+  E_ob$SMR <- round(E_ob$observed/E_ob$expected,2)
+  return(E_ob)
+}
+save('SMR', file = "functions//SMR.Rdata")
+SMR()
+```

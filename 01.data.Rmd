@@ -1,0 +1,249 @@
+---
+title: "Dados"
+output: "html_document"
+---
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+# Desativar notação científica e carregar pacotes
+options(scipen=999)
+# Carregar pacotes
+library(tidyverse)
+library(geobr)
+# library(microdatasus)
+library(brpop)
+library(knitr)
+library(lubridate)
+```
+
+# *Obtendo e Organizando os Dados*
+
+Os dados a serem analisados são referentes à Macrorregião de Saúde Sudeste de Minas Gerais nos últimos 10 anos, abrangendo:
+
+- Mortalidade,
+
+- Aspectos Socioeconômicos,
+
+- Assistência Médica.
+
+## *Selecionando Cidades da Região*
+
+A região em questão pertence ao sudeste de Minas Gerais.
+
+```{r eval=FALSE, include=FALSE}
+tab_mun_micro_macro <- read.csv("data//tab_mun_micro_macro_br.csv", 
+                                sep = ";", encoding = "UTF-8")
+se_minas <- tab_mun_micro_macro %>% filter(UF == "MG" & MACRO_COD == "3107")
+# Filtrar os códigos das cidades
+cods <- se_minas$MUN_COD %>% str_sub(end = 6)
+```
+
+## *Dados Espaciais*
+
+Baixando dados para os mapas.
+
+```{r eval=FALSE}
+# Baixar mapas no formato sf (formato IBGE gerado pelo IPEA)
+munMG <- read_municipality(code_muni = 31, year = 2020)
+write_rds(munMG, "data//munMG.rds")
+
+munMG <- as_Spatial(munMG, cast = TRUE, IDs = paste0("ID", seq_along(regiao)))
+```
+
+```{r eval=FALSE}
+# O DATASUS usa apenas 6 dígitos para os códigos municipais
+munMG <- read_rds('data//munMG.rds')
+munMG$code_muni <- str_sub(munMG$code_muni, end = 6)
+# Filtrar os dados de Minas Gerais com base na região sudeste
+se_map <- munMG %>% filter(code_muni %in% cods) %>% 
+  select(code_muni, name_muni)
+```
+
+## *Dados de Mortalidade*
+
+Obtendo dados de mortalidade do DATASUS. Este é o banco de dados principal.
+
+```{r eval=FALSE}
+# Baixar dados de mortalidade (DATASUS)
+# Óbitos por câncer nos municípios de MG de 2010 a 2019
+data_ob <- fetch_datasus(year_start = 2010, year_end = 2019, 
+                         uf = "MG", 
+                         information_system = "SIM-DO")
+data_ob <- data_ob %>% select(DTOBITO, IDADE, DTNASC, SEXO, CODMUNRES, CAUSABAS)
+data_ob <- process_sim(data_ob)
+names(data_ob)
+# Obter dados da CID
+cid <- readxl::read_excel("data//CID-10.xltx") %>% select(CAT, DESCRICAO)
+# Esta etapa leva tempo, então vamos salvar os dados
+write_rds(data_ob, "data//data_ob.rds")
+```
+
+## *Causas de Morte*
+
+Para analisar a mortalidade por câncer, será produzido outro conjunto de dados.
+
+Códigos propostos para câncer: C00 a C97 e D46.
+
+Seleção baseada na Ripsa.
+
+<http://fichas.ripsa.org.br/2012/c-10/?l=pt_BR>
+
+```{r eval=FALSE}
+cid <- readxl::read_excel("data//CID-10.xltx") %>% select(CAT, DESCRICAO)
+data_ob <- read_rds("data//data_ob.rds") %>% 
+  mutate(CAUSABAS = CAUSABAS %>% str_sub(end = 3) %>% as.factor()) %>%
+  select(-c(10:17)) %>% 
+  left_join(cid, by = c('CAUSABAS'='CAT')) %>% 
+  mutate(CAUSABAS = CAUSABAS %>% as.factor(),
+         IDADEanos = IDADEanos %>% as.integer(),
+         DTOBITO = DTOBITO %>% ymd() %>% year)
+```
+
+## *Dados Populacionais*
+
+```{r eval=FALSE}
+# Baixar dados populacionais (DATASUS)
+library(brpop)
+# Identificar as categorias de população e mesclar os dados
+mun_male_pop$m_pop <- mun_male_pop$pop
+mun_male_pop <- mun_male_pop %>% select(-pop) %>% filter(age_group != "Total")
+
+mun_female_pop$f_pop <- mun_female_pop$pop
+mun_female_pop <- mun_female_pop %>% select(-pop) %>% filter(age_group != "Total")
+mun_pop <- mun_pop()
+mun_pop$t_pop <- mun_pop$pop
+mun_pop <- mun_pop %>% select(-pop) %>% filter(age_group != "Total")
+# Dados populacionais com categorias de sexo
+mun_pop_mft <- left_join(mun_pop, mun_male_pop) %>% 
+  left_join(mun_female_pop) %>% 
+  mutate(
+    pop = t_pop) %>% select(-t_pop)
+# Salvar dados populacionais
+write_rds(mun_pop_mft,"data//mun_pop.rds")
+```
+
+```{r eval=FALSE}
+# Carregar
+mun_pop <- read_rds("data//mun_pop.rds")
+```
+
+## *Dados Socioeconômicos*
+
+Primeiro, precisamos filtrar os dados a serem usados.
+
+```{r eval=FALSE}
+# Variáveis selecionadas
+var_census <- 
+  str_split(c('Codmun6
+Município
+AGUA_ESGOTO
+ESPVIDA
+GINI
+IDHM
+IDHM_E
+IDHM_L
+IDHM_R
+pesoRUR
+pesotot
+pesourb
+RDPC
+SOBRE40
+SOBRE60
+T_AGUA
+T_BANAGUA
+T_ENV
+T_LIXO
+T_LUZ
+THEIL') ,"\n")[[1]]
+
+# Dados agregados
+siglas_ag <- readxl::read_excel("data//censo_agregado.xlsx", sheet = 1) %>% filter(SIGLA %in% var_census)
+write_rds(siglas_ag, "data//siglas_ag.rds")
+census_2010 <- readxl::read_excel("data//censo_agregado.xlsx", sheet = 2)
+# Filtrar apenas zona da mata
+# E
+# Selecionar dados que possam estar mais relacionados a doenças
+census_2010 <- census_2010 %>% 
+  filter (Codmun6 %in% cods & ANO == 2010) %>% 
+
+
+  select(all_of(var_census)) %>% select(-Município) %>% 
+  mutate(Codmun6 = Codmun6 %>%  as.character())
+# Salvar
+write_rds(census_2010,"data//census_2010.rds")
+```
+
+## *Cobertura da APS (Atenção Primária à Saúde)*
+
+```{r eval=FALSE}
+# Dados de cobertura em datas desde 2007, então vamos reunir todos em um conjunto de dados
+library(readxl)
+coverage <- tibble()
+for (i in 2010:2020){
+  
+  coverage_l <-  
+    read_excel("data/APS/Historico-AB-MUNICIPIOS-2007-202012.xlsx", 
+               sheet = i %>% as.character()) %>% 
+    mutate(year = i,
+           mun = CO_MUNICIPIO_IBGE %>% 
+             str_sub(end = 6))%>% 
+    select(!c(CO_REGIAO,NO_REGIAO,
+              NU_COMPETENCIA,SG_REGIAO,
+              CO_UF_IBGE, NO_UF_ACENTUADO,SG_UF))
+  
+  # Selecionar o mês 6 como referência
+  coverage_6 <- tibble()
+  for (o in cods){
+    lil <- coverage_l %>% filter (mun == o) %>% 
+      mutate(mes = 1:12) %>% filter (mes == 6)
+    coverage_6 <- bind_rows(lil, coverage_6)
+  }
+  
+  coverage <- bind_rows(coverage, coverage_6)
+  
+}
+write_rds(coverage, "data//APS//health_coverage_6.rds")
+
+# Dados apenas para 2010
+coverage <- read_rds("data//APS//health_coverage_6.rds")
+aps_coverage_2010 <- coverage %>% 
+  filter(year == 2010) %>% 
+  select(c(mun, PC_COBERTURA_SF,PC_COBERTURA_AB)) %>% 
+  mutate_all(~str_replace(.,",",".")) %>% 
+  mutate(PC_COBERTURA_SF = PC_COBERTURA_SF %>% as.numeric(),
+         PC_COBERTURA_AB = PC_COBERTURA_AB %>% as.numeric())
+write_rds(aps_coverage_2010,"data//aps_coverage_2010.rds")
+```
+
+## *Cobertura Suplementar (ANS)*
+
+<https://www.gov.br/ans/pt-br/acesso-a-informacao/perfil-do-setor/dados-e-indicadores-do-setor/baixar-base-de-dados>
+
+```{r eval=FALSE}
+# População em 2010
+pop_2010 <- mun_pop %>% filter(year == 2010) %>% group_by(mun) %>% 
+  summarise(pop = sum(pop))
+# Total de pessoas com seguro saúde em 06/2010
+coverage_ANS <- 
+  xlsx::read.xlsx("data//ANS//ANS-tabnet-2010-06.xlsx", 
+                  sheetIndex = 1) %>%
+  mutate(mun = `Mun.residência` %>% 
+           str_remove_all('[:alpha:]|-|\'| ') %>% as.numeric()) %>%
+  select(mun, pop_ans = Total ) %>% 
+  left_join(pop_2010) %>% mutate(coverage_ANS = round(pop_ans/pop,2),
+                                 mun = mun %>% as.character()) %>% 
+  select(mun, coverage_ANS)
+write_rds(coverage_ANS,file = "data//covarege_ANS.rds")
+```
+
+
+## Lista de Variáveis
+```{r eval=FALSE, include=FALSE}
+variables_list <- c("SMR", "expected","Crude","Adj","AGUA_ESGOTO",
+                    "ESPVIDA","GINI","IDHM","IDHM_E","IDHM_L","IDHM_R","pesoRUR",
+                    "pesotot","pesourb","RDPC","SOBRE40","SOBRE60","T_AGUA",
+                    "T_BANAGUA","T_ENV","T_LIXO","T_LUZ","T_SLUZ","THEIL",
+                    "FECTOT","PC_COBERTURA_SF","PC_COBERTURA_AB","coverage_ANS")
+write_rds(variables_list, 'variables_list.rds')
+```
+
+
