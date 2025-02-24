@@ -10,7 +10,7 @@ O objetivo principal é explorar como as desigualdades socioeconômicas, medidas
 
 O conjunto de dados inclui informações sobre mortalidade por câncer (C00 a C97 e D46, CID-10) e variáveis socioeconômicas, como o Índice de Gini, PIB per capita e outros indicadores dos determinantes sociais da saúde. Os dados foram extraídos de bancos de dados públicos de saúde e abrangem 94 municípios da MSSMG.
 
-OBS: OS DADOS UTULIZADOS ULTRAPASSAM O TAMANHO PERMITIDO PELO GITHUB E ESTÃO DISPONÍVEIS SOBRE DEMANDA, BASTA SOLICITAR VIA EMAIL: jpmedeirosg@gmail.com
+OBS: OS DADOS UTULIZADOS ULTRAPASSAM O TAMANHO PERMITIDO PELO GITHUB E ESTÃO DISPONÍVEIS SOBRE DEMANDA, BASTA SOLICITAR VIA EMAIL: jpmedeirosg@gmail.com . Dados para modelagem estão disponíveis. 
 
 ## Metodologia
 
