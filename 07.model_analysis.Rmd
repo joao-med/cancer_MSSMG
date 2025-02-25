@@ -81,7 +81,8 @@ output_A <- inla(formula = mod_A,
 estimates_A <- rownames_to_column(
   output_A$summary.fixed, var = 'variable')[-1,c(1,4,2,6)] %>% 
   mutate_if(is.numeric, ~ round(.,3))
-
+output_A$summary.fixed
+summary(output_A)
 estimates_A
 
 estimates_A %>% ggplot(aes(x = mean, y = variable))+
@@ -189,7 +190,7 @@ map <- ggplot() +
   geom_sf(data = mod_A, aes(fill = SMR),
           col="gray", size=0.3)+
   scale_fill_gradient2(midpoint=1, low="blue", mid="white", high="red") +
-  labs(fill="RMP",title="Razão de Mortalidade Padronizada") +
+  labs(fill="RMP",title="Distribuição Observada da RMP") +
   theme_bw()+
   annotation_scale(location = "br", width_hint = 0.5) +
   annotation_north_arrow(location = "br", which_north = "true", 
@@ -203,7 +204,7 @@ mapA <- ggplot() +
   geom_sf(data = mod_A, aes(fill = RMPa),
           col="gray", size=0.3)+
   scale_fill_gradient2(midpoint=1, low="blue", mid="white", high="red") +
-  labs(fill="RMP",title="Razão de Mortalidade Padronizada Modelo A") +
+  labs(fill="RMP",title="Distribuição Modelada da RMP") +
   theme_bw()+
   annotation_scale(location = "br", width_hint = 0.5) +
   annotation_north_arrow(location = "br", which_north = "true", 
@@ -226,7 +227,7 @@ estimates_A %>% xlsx::write.xlsx('figures_tabs/table2.xlsx')
 
 ```{r}
 fig <- map+mapA 
-ggsave('figures_tabs//fig1.png',fig, dpi = 600, width = 10, height = 5)
+ggsave('figures_tabs//fig1.tiff',fig, dpi = 350, width = 10, height = 4)
 ```
 
 
